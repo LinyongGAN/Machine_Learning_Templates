@@ -9,6 +9,7 @@ from torch.autograd import Variable
 import pandas as pd
 import csv
 from pathlib import Path
+import random
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -29,58 +30,54 @@ def read_file(src_path):
             text_list.append(line.strip().replace('\n',''))
     return text_list
 class CustomDataset(Dataset):
-    def __init__(self, data_list):
-        self.data = data_list
+    def __init__(self, srcs, tgts):
+        self.srcs = srcs
+        self.tgts = tgts
 
     def __len__(self):
-        return len(self.data)
+        assert len(self.srcs) == len(self.tgts)
+        return len(self.srcs)
 
     def __getitem__(self, index):
-        waveform, dB, label = self.data[index]
+        src = self.srcs[index]
+        tgt = self.tgts[index]
         return {
-                "waveform": waveform,
-                "dB" : dB, 
-                "label": label
+                "src": src,
+                "tgt": tgt
             }
 
-def data_standard(path):
-    df = pd.read_csv(path).T
-    dB = df.index
-    scaler = StandardScaler()
-    data_standardized = scaler.fit_transform(df)
-    data_standardized_df = pd.DataFrame(data_standardized, columns=df.columns)
-    data = torch.tensor(data_standardized_df.values.astype(np.float32))
-    dB = torch.tensor([float(str_val) for str_val in dB])
-    return data, dB
-
-def create_dataloader(root, batch_size=16):
-    normal_path = Path(root) / "0.csv"
-    abnormal_path = Path(root) / "1.csv"
-    normal_data,normal_dB = data_standard(normal_path)
-    abnormal_data, abnormal_dB = data_standard(abnormal_path)
+def create_dataloader(root=None, batch_size=16):
     
-    raw_list_normal, raw_list_abnormal = [], []
-    for data, dB in zip(normal_data, normal_dB):
-        raw_list_normal.append((data.unsqueeze(-2), dB, 0))
-    for data, dB in zip(abnormal_data, abnormal_dB):
-        raw_list_abnormal.append((data.unsqueeze(-2), dB, 1))
+    total_points = 300
+    N_tr = 16000
+    x_in_len = int(0.8 * total_points)
+    y_out_len = int(total_points - x_in_len)
+    srcs = np.empty((N_tr,x_in_len,2))
+    tgts = np.empty((N_tr,y_out_len,2))
 
-    num_abnormal, num_normal = len(raw_list_abnormal), len(raw_list_normal)
-    num_train_abnormal, num_train_normal = int(num_abnormal*0.9), int(num_normal*0.9)
-    num_valid_abnormal, num_valid_normal = num_abnormal-num_train_abnormal, num_normal-num_train_normal
+    for ind in range(N_tr):
+        total_loc = []
+        current_lat = random.randint(25,50)
+        current_lon = random.randint(25,50)
+        delta_lat = random.uniform(0.1,0.2)
+        delta_lon = random.uniform(0.1,0.2)
 
-    train_dataset = CustomDataset(raw_list_normal[:num_train_normal]+raw_list_abnormal[:num_train_abnormal])
-    val_dataset = CustomDataset(raw_list_normal[-num_valid_normal:]+raw_list_abnormal[-num_valid_abnormal:])
+        while len(total_loc) < total_points:
+            total_loc.append([current_lon, current_lat])
+
+            current_lat += delta_lat
+
+            if current_lon > 179:
+                current_lon = -179
+            current_lon += delta_lon
+
+        
+        total_loc = np.array(total_loc)
+        srcs[ind:] = total_loc[0:x_in_len]
+        tgts[ind,:] = total_loc[x_in_len:total_points]
+
+    train_dataset = CustomDataset(srcs, tgts)
 
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    valid_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle = True)
 
-    print("-"*20+"Dataset report"+"-"*20)
-    print(f"train_normal: {num_train_normal}, train_abnormal: {num_train_abnormal}, train_tot: {len(train_dataset)}")
-    assert num_train_abnormal+num_train_normal == len(train_dataset)
-    print(f"valid_normal: {num_valid_normal}, valid_abnormal: {num_valid_abnormal}, valid_tot: {len(val_dataset)}")
-    assert num_valid_abnormal+num_valid_normal == len(val_dataset)
-    print(f"tot_normal: {num_train_normal+num_valid_normal}, tot_abnormal: {num_train_abnormal+num_valid_abnormal}, total: {len(train_dataset)+len(val_dataset)}")
-    assert num_train_abnormal+num_valid_abnormal == num_abnormal and num_train_normal + num_valid_normal == num_normal
-    print('-'*54)
-    return train_dataloader, valid_dataloader
+    return train_dataloader, train_dataloader
